@@ -3,6 +3,7 @@
 require 'inspec/resource'
 require 'orchestrator_client'
 require 'tempfile'
+require 'uri'
 
 module InspecPlugins::Orch
   class CliCommand < Inspec.plugin(2, :cli_command)
@@ -31,12 +32,13 @@ module InspecPlugins::Orch
     def detect
       o = opts(:detect).dup
       o[:backend] = 'pcp'
-      orch = orch_client(o)
-      plan_job = plan_start(orch, :detect, o)
-      o[:plan_job] = plan_job
-      o[:command] = 'platform.params'
-      (_, res) = run_command(o)
-      plan_finish(orch, plan_job, res)
+
+      run_plan(:detect, o, host(o), "InSpec detect run on #{host(o)}") do |plan_job|
+        o[:plan_job] = plan_job
+        o[:command] = 'platform.params'
+        (_, res) = run_command(o)
+        res
+      end
 
       if o['format'] == 'json'
         puts res.to_json
@@ -55,55 +57,55 @@ module InspecPlugins::Orch
       configure_logger(o)
 
       o[:backend] = 'pcp'
-      orch = orch_client(o)
-      plan_job = plan_start(orch, :exec, o, targets)
-      o[:plan_job] = plan_job
 
-      reporters = o[:reporter]
+      run_plan(:exec, o, host(o), "InSpec exec run for #{targets.size} targets on #{host(o)}") do |plan_job|
+        o[:plan_job] = plan_job
+        reporters = o[:reporter]
 
-      display_json = false
+        display_json = false
 
-      # Setup the JSON reporter
-      reporters['json'] = { 'stdout' => false } unless reporters['json']
+        # Setup the JSON reporter
+        reporters['json'] = { 'stdout' => false } unless reporters['json']
 
-      if reporters['json']['stdout'] == true
-        # Save this in case we are supposed to also display JSON:
-        display_json = true
-        reporters['json']['stdout'] = false
+        if reporters['json']['stdout'] == true
+          # Save this in case we are supposed to also display JSON:
+          display_json = true
+          reporters['json']['stdout'] = false
+        end
+
+        # If the user specified a path then use it, otherwise generate a tempfile:
+        if reporters['json']['file']
+          outfile = reporters['json']['file']
+          tmpfile = nil
+        else
+          tmpfile = Tempfile.new(['inspec-orch','.json'])
+          outfile = tmpfile.path
+          reporters['json']['file'] = outfile
+        end
+
+        runner = Inspec::Runner.new(o)
+        targets.each { |target| runner.add_target(target) }
+
+        runner.run
+
+        result_data = File.read(outfile)
+        tmpfile.unlink if tmpfile
+
+        results = JSON.parse(result_data)
+
+        puts result_data if display_json
+        results
       end
-
-      # If the user specified a path then use it, otherwise generate a tempfile:
-      if reporters['json']['file']
-        outfile = reporters['json']['file']
-        tmpfile = nil
-      else
-        tmpfile = Tempfile.new(['inspec-orch','.json'])
-        outfile = tmpfile.path
-        reporters['json']['file'] = outfile
-      end
-
-      runner = Inspec::Runner.new(o)
-      targets.each { |target| runner.add_target(target) }
-
-      runner.run
-
-      result_data = File.read(outfile)
-      results = JSON.parse(result_data)
-
-      plan_finish(orch, plan_job, results)
-
-      puts result_data if display_json
-
-      tmpfile.unlink if tmpfile
     end
 
     private
 
     def orch_uri(o)
-      if o[:orch_host] and o[:orch_port]
-        "https://#{o[:orch_host]}:#{o[:orch_port]}"
-      elsif o[:orch_host]
-        "https://#{o[:orch_host]}"
+      if o[:orch_host]
+        uri = URI('https://')
+        uri.host = o[:orch_host]
+        uri.port = o[:orch_port]
+        uri.to_s
       else
         nil
       end
@@ -119,28 +121,49 @@ module InspecPlugins::Orch
     end
 
     def host(o)
-      o[:host] || URI.parse(o[:target]).hostname
+      URI.parse(o[:target]).hostname
     end
 
-    def plan_start(orch, type, opts, targets=[])
+    def run_plan(type, opts, node, desc, &block)
+      client = orch_client(opts)
+
+      job = plan_start(client, type, opts)
+
+      results = begin
+                  {
+                    status: "success",
+                    result: block.call(job),
+                  }
+                rescue => e
+                  {
+                    status: "failure",
+                    result: {
+                      error: {
+                        exception_class: e.class,
+                        exception_message: e.message,
+                        backtrace: e.backtrace,
+                      },
+                    },
+                  }
+                end
+
+      plan_finish(client, job, results)
+    end
+
+    def plan_start(orch, type, opts)
       req = {
         plan_name: "inspec::#{type}",
         description: "InSpec #{type} execution for node #{host(opts)}",
-        params: {
-          node: host(opts),
-        },
+        params: {},
       }
-      req[:params][:targets] = targets unless targets.empty?
       resp = orch.command.plan_start(req)
       resp['name']
     end
 
-    def plan_finish(orch, plan_job, result = {})
+    def plan_finish(orch, plan_job, result)
       req = {
         plan_job: plan_job,
-        result: result,
-        status: "success",
-      }
+      }.merge(result)
       orch.command.plan_finish(req)
     end
 
