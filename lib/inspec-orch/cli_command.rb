@@ -58,7 +58,7 @@ module InspecPlugins::Orch
 
       o[:backend] = 'pcp'
 
-      run_plan(:exec, o, host(o), "InSpec exec run for #{targets.size} targets on #{host(o)}") do |plan_job|
+      run_plan(:exec, o, host(o), "InSpec exec run for one or more profiles on #{host(o)}") do |plan_job|
         o[:plan_job] = plan_job
         reporters = o[:reporter]
 
