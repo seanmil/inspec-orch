@@ -33,7 +33,7 @@ module InspecPlugins::Orch
       o = opts(:detect).dup
       o[:backend] = 'pcp'
 
-      run_plan(:detect, o, host(o), "InSpec detect run on #{host(o)}") do |plan_job|
+      res = run_plan(:detect, o, host(o), "InSpec detect run on #{host(o)}") do |plan_job|
         o[:plan_job] = plan_job
         o[:command] = 'platform.params'
         (_, res) = run_command(o)
@@ -135,26 +135,34 @@ module InspecPlugins::Orch
 
       job = plan_start(client, type, opts)
 
-      results = begin
-                  {
-                    status: "success",
-                    result: block.call(job),
-                  }
-                rescue => e
-                  {
-                    status: "failure",
-                    result: {
-                      error: {
-                        exception_class: e.class,
-                        exception_message: e.message,
-                        backtrace: e.backtrace,
-                      },
-                    },
-                  }
-                end
+      result = begin
+                 block.call(job)
+               rescue => e
+                 nil
+               end
 
-      plan_finish(client, job, results)
+      plan_result = if result
+                      {
+                        status: "success",
+                        result: result,
+                      }
+                    else
+                      {
+                        status: "failure",
+                        result: {
+                          error: {
+                            exception_class: e.class,
+                            exception_message: e.message,
+                            backtrace: e.backtrace,
+                          },
+                        },
+                      }
+                    end
+
+      plan_finish(client, job, plan_result)
       raise e unless e.nil?
+
+      result
     end
 
     def plan_start(orch, type, opts)
