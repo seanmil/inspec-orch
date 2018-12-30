@@ -89,12 +89,18 @@ module InspecPlugins::Orch
         runner.run
 
         result_data = File.read(outfile)
-        tmpfile.unlink if tmpfile
 
         results = JSON.parse(result_data)
 
         puts result_data if display_json
         results
+      rescue ArgumentError, RuntimeError, Train::UserError => e
+        $stderr.puts e.message
+        exit 1
+      rescue StandardError => e
+        pretty_handle_exception(e)
+      ensure
+        tmpfile.unlink if tmpfile
       end
     end
 
@@ -148,6 +154,7 @@ module InspecPlugins::Orch
                 end
 
       plan_finish(client, job, results)
+      raise e unless e.nil?
     end
 
     def plan_start(orch, type, opts)
